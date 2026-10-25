@@ -28,10 +28,11 @@ FETCH_JS = """async (url) => {
 def fetch_stores():
     url = f"/shop/fulfillment-messages?fae=true&pl=true&mts.0=regular&parts.0={PART}&location={ZIP}"
     with sync_playwright() as p:
+        headless = os.environ.get("HEADED") != "1"
         browser = p.chromium.launch(
             channel=os.environ.get("BROWSER_CHANNEL") or None,
-            headless=True,
-            args=["--headless=new", "--disable-blink-features=AutomationControlled"],
+            headless=headless,
+            args=["--disable-blink-features=AutomationControlled"] + (["--headless=new"] if headless else []),
         )
         ctx = browser.new_context(user_agent=UA, locale="en-US", viewport={"width": 1440, "height": 900})
         ctx.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")

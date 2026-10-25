@@ -27,13 +27,9 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install playwright==1.48.0
-      - uses: actions/cache@v4
-        with:
-          path: ~/.cache/ms-playwright
-          key: playwright-1.48.0
-      - run: python -m playwright install --with-deps chromium
       - name: Check stock
         env:
+          BROWSER_CHANNEL: chrome
           RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
         run: python check.py ${{ inputs.test_email && '--test-email' || '' }}
       - name: Save alert state

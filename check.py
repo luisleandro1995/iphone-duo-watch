@@ -29,6 +29,7 @@ def fetch_stores():
     url = f"/shop/fulfillment-messages?fae=true&pl=true&mts.0=regular&parts.0={PART}&location={ZIP}"
     with sync_playwright() as p:
         browser = p.chromium.launch(
+            channel=os.environ.get("BROWSER_CHANNEL") or None,
             headless=True,
             args=["--headless=new", "--disable-blink-features=AutomationControlled"],
         )

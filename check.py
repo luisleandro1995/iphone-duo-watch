@@ -10,7 +10,8 @@ from zoneinfo import ZoneInfo
 from playwright.sync_api import sync_playwright
 
 PART = os.environ.get("PART", "MK1F4LL/A")
-ZIP = os.environ.get("ZIP", "94103")
+ZIP = os.environ.get("ZIP", "10001")
+TIMEZONE = os.environ.get("TIMEZONE", "America/New_York")
 PRODUCT_URL = "https://www.apple.com/shop/buy-iphone/iphone-duo"
 TO_EMAIL = os.environ.get("TO_EMAIL", "luisunion11@hotmail.com")
 STATE_FILE = Path(__file__).with_name("state.json")
@@ -107,7 +108,7 @@ def main():
         popup(
             "iPhone Duo Watch (TEST)",
             "This is a test. When the iPhone Duo 256GB Night Sky is available for pickup today "
-            "near 94103, you'll see a pop-up like this listing the stores.",
+            f"near {ZIP}, you'll see a pop-up like this listing the stores.",
         )
         return
 
@@ -125,7 +126,7 @@ def main():
 
     hits = {s["store"] for s in rule_based_hits(stores)}
 
-    today = datetime.now(ZoneInfo("America/Los_Angeles")).date().isoformat()
+    today = datetime.now(ZoneInfo(TIMEZONE)).date().isoformat()
     state = json.loads(STATE_FILE.read_text()) if STATE_FILE.exists() else {}
     already = set(state.get(today, []))
     new_hits = sorted(hits - already)

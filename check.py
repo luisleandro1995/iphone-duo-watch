@@ -1,5 +1,6 @@
 import json
 import os
+import subprocess
 import sys
 import urllib.request
 from datetime import datetime
@@ -67,7 +68,22 @@ def rule_based_hits(stores):
     ]
 
 
+def popup(title, message):
+    if sys.platform != "darwin":
+        return
+    esc = lambda s: s.replace("\\", "\\\\").replace('"', '\\"')
+    subprocess.run(["afplay", "/System/Library/Sounds/Glass.aiff"], check=False)
+    subprocess.Popen([
+        "osascript", "-e",
+        f'display dialog "{esc(message)}" with title "{esc(title)}" buttons {{"OK"}} '
+        f'default button "OK" with icon caution',
+    ])
+
+
 def send_email(subject, html):
+    if not os.environ.get("RESEND_API_KEY"):
+        print("RESEND_API_KEY not set, skipping email.")
+        return
     req = urllib.request.Request(
         "https://api.resend.com/emails",
         data=json.dumps({
@@ -87,6 +103,14 @@ def send_email(subject, html):
 
 
 def main():
+    if "--test-popup" in sys.argv:
+        popup(
+            "iPhone Duo Watch (TEST)",
+            "This is a test. When the iPhone Duo 256GB Night Sky is available for pickup today "
+            "near 94103, you'll see a pop-up like this listing the stores.",
+        )
+        return
+
     if "--test-email" in sys.argv:
         send_email(
             "Test: iPhone Duo pickup watcher is set up",
@@ -112,6 +136,13 @@ def main():
     rows = "".join(
         f"<li><b>{s['store']}</b> ({s['city']}, {s['miles']} mi): {s['storeQuote'] or s['quote']}</li>"
         for s in stores if s["store"] in new_hits
+    )
+    popup(
+        "iPhone Duo available for pickup TODAY",
+        "\n".join(
+            f"{s['store']} ({s['city']}, {s['miles']} mi): {s['storeQuote'] or s['quote']}"
+            for s in stores if s["store"] in new_hits
+        ) + f"\n\nReserve at {PRODUCT_URL}",
     )
     send_email(
         f"iPhone Duo available for pickup TODAY: {', '.join(new_hits)}",

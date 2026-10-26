@@ -1,7 +1,9 @@
 import json
 import os
+import random
 import subprocess
 import sys
+import time
 import urllib.request
 from datetime import datetime
 from pathlib import Path
@@ -27,25 +29,71 @@ FETCH_JS = """async (url) => {
 }"""
 
 
-def fetch_stores():
-    url = f"/shop/fulfillment-messages?fae=true&pl=true&mts.0=regular&parts.0={PART}&location={ZIP}"
-    with sync_playwright() as p:
-        headless = os.environ.get("HEADED") != "1"
-        browser = p.chromium.launch(
-            channel=os.environ.get("BROWSER_CHANNEL") or None,
-            headless=headless,
-            args=["--disable-blink-features=AutomationControlled"] + (["--headless=new"] if headless else []),
-        )
-        ctx = browser.new_context(user_agent=UA, locale="en-US", viewport={"width": 1440, "height": 900})
-        ctx.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
-        page = ctx.new_page()
-        page.goto(PRODUCT_URL, wait_until="networkidle", timeout=60000)
-        page.wait_for_timeout(4000)
-        res = page.evaluate(FETCH_JS, url)
-        browser.close()
+FULFILLMENT_URL = f"/shop/fulfillment-messages?fae=true&pl=true&mts.0=regular&parts.0={PART}&location={ZIP}"
+CHROME_APP = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+PROFILE_DIR = Path(__file__).with_name("chrome-profile")
+
+
+class AppleBlocked(RuntimeError):
+    pass
+
+
+def real_chrome_ua():
+    try:
+        version = subprocess.run([CHROME_APP, "--version"], capture_output=True, text=True, timeout=30).stdout
+        major = version.split()[-1].split(".")[0]
+    except Exception:
+        major = "130"
+    return (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+        f"(KHTML, like Gecko) Chrome/{major}.0.0.0 Safari/537.36"
+    )
+
+
+def open_session(p):
+    """Launch the installed Google Chrome with a persistent profile, so cookies carry over like a real visitor."""
+    headless = os.environ.get("HEADED") != "1"
+    use_real_chrome = sys.platform == "darwin" or os.environ.get("BROWSER_CHANNEL") == "chrome"
+    args = ["--disable-blink-features=AutomationControlled"] + (["--headless=new"] if headless else [])
+    opts = dict(
+        headless=headless,
+        args=args,
+        user_agent=real_chrome_ua() if sys.platform == "darwin" else UA,
+        locale="en-US",
+        viewport={"width": 1440, "height": 900},
+    )
+    if use_real_chrome:
+        opts["channel"] = "chrome"
+    ctx = p.chromium.launch_persistent_context(str(PROFILE_DIR), **opts)
+    ctx.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+    page = ctx.pages[0] if ctx.pages else ctx.new_page()
+    load_product_page(page)
+    return ctx, page
+
+
+def load_product_page(page):
+    page.goto(PRODUCT_URL, wait_until="networkidle", timeout=60000)
+    page.wait_for_timeout(4000)
+
+
+def query_stores(page):
+    res = page.evaluate(FETCH_JS, FULFILLMENT_URL)
     if res["status"] != 200:
-        raise RuntimeError(f"Apple returned HTTP {res['status']}: {res['body'][:300]}")
-    stores = json.loads(res["body"])["body"]["content"]["pickupMessage"]["stores"]
+        raise AppleBlocked(f"Apple returned HTTP {res['status']}")
+    return parse_stores(res["body"])
+
+
+def fetch_stores():
+    with sync_playwright() as p:
+        ctx, page = open_session(p)
+        try:
+            return query_stores(page)
+        finally:
+            ctx.close()
+
+
+def parse_stores(body):
+    stores = json.loads(body)["body"]["content"]["pickupMessage"]["stores"]
     out = []
     for s in stores:
         pa = s.get("partsAvailability", {}).get(PART, {})
@@ -120,10 +168,59 @@ def main():
         )
         return
 
+    if "--loop" in sys.argv:
+        run_loop()
+        return
+
     stores = fetch_stores()
     for s in stores:
         print(f"{s['store']:<28} {s['pickupDisplay']:<12} {s['quote']}")
+    alert_on_new_hits(stores)
+    print("Done.")
 
+
+def run_loop():
+    interval = float(os.environ.get("INTERVAL_SECONDS", "30"))
+    reload_every = 15 * 60
+    backoff = 0
+    with sync_playwright() as p:
+        while True:
+            try:
+                ctx, page = open_session(p)
+                last_reload = time.time()
+                while True:
+                    if time.time() - last_reload > reload_every:
+                        load_product_page(page)
+                        last_reload = time.time()
+                    try:
+                        stores = query_stores(page)
+                    except AppleBlocked as e:
+                        backoff = min(max(backoff * 2, 120), 900)
+                        log(f"{e}; pausing {backoff // 60:.0f} min, then reloading the page")
+                        time.sleep(backoff)
+                        load_product_page(page)
+                        last_reload = time.time()
+                        continue
+                    backoff = 0
+                    available = [s for s in stores if s["pickupDisplay"] == "available"]
+                    log(f"ok: {len(available)}/{len(stores)} stores show pickup "
+                        + (", ".join(f"{s['store']} ({s['quote']})" for s in available) or ""))
+                    alert_on_new_hits(stores)
+                    time.sleep(interval * random.uniform(0.8, 1.2))
+            except Exception as e:
+                log(f"browser error: {str(e).splitlines()[0][:200]}; restarting Chrome in 60s")
+                try:
+                    ctx.close()
+                except Exception:
+                    pass
+                time.sleep(60)
+
+
+def log(msg):
+    print(f"{datetime.now(ZoneInfo(TIMEZONE)):%Y-%m-%d %H:%M:%S} {msg}", flush=True)
+
+
+def alert_on_new_hits(stores):
     hits = {s["store"] for s in rule_based_hits(stores)}
 
     today = datetime.now(ZoneInfo(TIMEZONE)).date().isoformat()
@@ -131,7 +228,6 @@ def main():
     already = set(state.get(today, []))
     new_hits = sorted(hits - already)
     if not new_hits:
-        print("No new pickup-today stock.")
         return
 
     rows = "".join(
